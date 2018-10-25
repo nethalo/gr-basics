@@ -1,0 +1,92 @@
+---
+- hosts: all
+  become: True
+  tasks:
+     - name: Install MySQL Repo
+       yum:
+          name: http://dev.mysql.com/get/mysql57-community-release-el7-9.noarch.rpm
+          state: present
+
+     - name: Install MySQL Server
+       yum:
+          name: "{{ item }}"
+          state: present
+       with_items:
+          - mysql-community-server
+          - mysql-community-libs-compat
+          - vim
+       #notify:
+       #   - start mysql
+
+     - name: Enable binlogs
+       ini_file:
+          path: /etc/my.cnf
+          section: mysqld
+          option: "{{ item.option }}"
+          value: "{{ item.value }}"
+       with_items:
+           - { option: log_bin, value: "binlog" }
+           - { option: binlog_format, value: "ROW" }
+           - { option: gtid_mode, value: "ON" }
+           - { option: enforce_gtid_consistency, value: "ON" }
+           - { option: log_slave_updates, value: "ON" }
+           - { option: binlog_checksum, value: "NONE" }
+           - { option: master_info_repository, value: "TABLE" }
+           - { option: relay_log_info_repository, value: "TABLE" }
+           - { option: transaction_write_set_extraction, value: "XXHASH64" }
+           - { option: loose-group_replication_group_name, value: "\"36fb5416-d72a-11e8-94e5-525400cae48b\"" }
+           - { option: loose-group_replication_start_on_boot, value: "off" }
+           - { option: loose-group_replication_group_seeds, value: "\"192.168.70.10:33061,192.168.70.20:33061,192.168.70.30:33061\"" }
+           - { option: loose-group_replication_bootstrap_group, value: "off" }
+           - { option: loose-group_replication_local_address, value: "\"{{ ansible_eth1.ipv4.address }}:33061\"" }
+           - { option: loose-validate_password_policy, value: "0" }
+           - { option: loose-validate_password_length, value: "6" }
+           - { option: loose-validate_password_number_count, value: "0" }
+       notify:
+          - start mysql
+
+     - name: Change server_id
+       ini_file:
+         path: /etc/my.cnf
+         section: mysqld
+         option: server_id
+         value: "{{ ['10','20','30']|random }}"
+       #notify:
+       #   - start mysql
+
+     - name: start mysql
+       service:
+             name: mysqld
+             state: restarted
+             enabled: yes
+
+     - name: Wait for MySQL
+       pause:
+            seconds=20
+
+     - name: Change mysql root password and keep track in 
+       shell: |
+           password_match=`awk '/A temporary password is generated for/ {a=$0} END{ print a }' /var/log/mysqld.log | awk '{print $(NF)}'`
+           echo $password_match
+           mysql -uroot -p$password_match --connect-expired-password -e "SET SESSION sql_log_bin=0; SET GLOBAL validate_password_policy = 0; SET GLOBAL validate_password_length = 6; SET GLOBAL validate_password_number_count = 0; ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'cocacola'; flush privileges; "
+           sudo echo -e "[client]\nuser=root\npassword=cocacola" > /root/.my.cnf
+       args:
+         creates: /root/.my.cnf
+       register: change_temp_pass
+       #notify: 
+       #   - start mysql
+
+     - meta: flush_handlers
+     - debug:
+         var: change_temp_pass
+
+     - name: Disable SELinux
+       shell: |
+            sudo setenforce 0
+
+  handlers:
+     - name: start mysql
+       service:
+             name: mysqld
+             state: restarted
+             enabled: yes
